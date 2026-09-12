@@ -1,0 +1,30 @@
+{
+  "name": "@rokelvisar/video-extractor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "3-stage hybrid (browser + Go/FFmpeg) pipeline for asynchronous VLM storytelling analysis of large videos",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rokelvisar/storyframe.git"
+  },
+  "homepage": "https://github.com/rokelvisar/storyframe#readme",
+  "bugs": "https://github.com/rokelvisar/storyframe/issues",
+  "workspaces": [
+    "frontend"
+  ],
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "scripts": {
+    "build": "npm --workspace frontend run build",
+    "start:frontend": "npm --workspace frontend run start",
+    "test": "npm run test:frontend && npm run test:backend",
+    "test:frontend": "npm --workspace frontend run test:ci",
+    "test:backend": "cd backend && go test ./...",
+    "lint": "npm --workspace frontend run lint",
+    "docker:build": "docker build -t video-extractor:local .",
+    "docker:run": "docker run --rm -p 8080:8080 -v \"$PWD/data:/data\" --env-file .env video-extractor:local",
+    "e2e": "bash scripts/e2e.sh"
+  }
+}

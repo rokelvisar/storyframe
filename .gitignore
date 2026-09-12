@@ -1,0 +1,33 @@
+# Node / Angular
+node_modules/
+frontend/dist/
+frontend/.angular/
+npm-debug.log*
+*.tsbuildinfo
+
+# Go
+backend/video-extractor
+backend/web/dist/
+*.test
+*.out
+
+# Runtime data
+data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Local env / secrets
+.env
+.env.local
+*.local
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Test artifacts
+scripts/sample.mp4
+scripts/e2e-out/

@@ -1,0 +1,112 @@
+name: build & test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache-dependency-path: backend/go.sum
+      - name: Go vet & test
+        working-directory: backend
+        run: |
+          go vet ./...
+          go test ./...
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm --workspace frontend run test:ci
+      - run: npm --workspace frontend run build
+
+  build-and-push:
+    needs: test
+    runs-on: ubuntu-latest
+    # Only push a real image on main; PRs still get the build-and-cache benefit
+    # without publishing an image tag for an unreviewed change.
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      sha_tag: ${{ steps.meta.outputs.sha_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        run: echo "sha_tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ steps.meta.outputs.sha_tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  e2e:
+    needs: build-and-push
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Install ffmpeg, jq, xvfb
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg jq xvfb
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Pull the image just built
+        run: docker pull ${{ env.IMAGE }}:${{ needs.build-and-push.outputs.sha_tag }}
+      - name: API-level e2e (scripts/e2e.sh)
+        run: scripts/e2e.sh --image ${{ env.IMAGE }}:${{ needs.build-and-push.outputs.sha_tag }} --port 18080
+      - name: Start container for the browser e2e
+        run: |
+          docker run -d --name sf-e2e -p 8080:8080 -e ANALYSIS_PROVIDER=noop \
+            ${{ env.IMAGE }}:${{ needs.build-and-push.outputs.sha_tag }}
+          for i in $(seq 1 60); do curl -fsS http://localhost:8080/healthz && exit 0; sleep 1; done
+          echo "container never became healthy"; exit 1
+      # Runners have no LAN route to any particular deployment, so this always
+      # exercises the noop provider — it still emits non-empty placeholder
+      # story/segment text, so the pipeline mechanics checks are unaffected.
+      - name: Real-browser e2e (frontend/e2e/browser-pipeline.mjs)
+        env:
+          APP: http://localhost:8080
+        run: xvfb-run -a node frontend/e2e/browser-pipeline.mjs
+      - name: Container logs
+        if: always()
+        run: docker logs sf-e2e || true
+      - name: Stop container
+        if: always()
+        run: docker rm -f sf-e2e || true

@@ -1,0 +1,14 @@
+# keep the build context small
+**/node_modules
+**/.angular
+**/.git
+frontend/dist
+backend/web/dist
+backend/video-extractor
+data
+scripts/sample.mp4
+scripts/e2e-out
+*.md
+!README.md
+.github
+.claude

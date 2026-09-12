@@ -1,0 +1,39 @@
+# Portainer compose stack — see deploy/README.md. Deployed via the Stack API
+# by deploy-portainer.py with pullImage=true; `image:` below is rewritten to
+# IMAGE_REPO:IMAGE_TAG by that script before it's sent to Portainer.
+#
+# If you front this with a reverse-proxy agent that auto-manages proxy hosts
+# from container labels (some Portainer/NPM setups do), be aware it may
+# delete+recreate a label-driven proxy host on every container recreate
+# (i.e. every deploy) — a hand-made proxy host with no such labels avoids that.
+services:
+  video-extractor:
+    image: ghcr.io/OWNER/REPO:latest
+    restart: unless-stopped
+    ports:
+      - "8078:8080"
+    environment:
+      ANALYSIS_PROVIDER: "${ANALYSIS_PROVIDER:-litellm}"
+      LITELLM_BASE_URL: "${LITELLM_BASE_URL:-}"
+      LITELLM_API_KEY: "${LITELLM_API_KEY:-}"
+      LITELLM_VLM_MODEL: "${LITELLM_VLM_MODEL:-}"
+      LITELLM_WHISPER_MODEL: "${LITELLM_WHISPER_MODEL:-}"
+      FFMPEG_WORKERS: "${FFMPEG_WORKERS:-2}"
+      IMMICH_BASE_URL: "${IMMICH_BASE_URL:-}"
+      IMMICH_API_KEY: "${IMMICH_API_KEY:-}"
+      # Writes the finished analysis back onto the source Immich asset
+      # (description + custom metadata). Defaults on; set "false" to disable.
+      IMMICH_WRITEBACK: "${IMMICH_WRITEBACK:-}"
+      # Both have sane built-in defaults (en,sl / sl) — only set these to change them.
+      TRANSCRIBE_LANGUAGE_HINT: "${TRANSCRIBE_LANGUAGE_HINT:-}"
+      OUTPUT_LANGUAGE: "${OUTPUT_LANGUAGE:-}"
+      # Job store backend: when set, jobs persist to this MySQL/MariaDB server
+      # instead of the local SQLite file in the data volume — survives
+      # container/volume loss and is centrally queryable. Unset falls back to
+      # the local SQLite file (DB_PATH).
+      MYSQL_DSN: "${MYSQL_DSN:-}"
+    volumes:
+      - video_extractor_data:/data
+
+volumes:
+  video_extractor_data:

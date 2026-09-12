@@ -1,0 +1,34 @@
+{
+  "name": "@rokelvisar/video-extractor-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "start": "ng serve --proxy-config proxy.conf.json",
+    "build": "ng build",
+    "watch": "ng build --watch --configuration development",
+    "test": "vitest",
+    "test:ci": "vitest run",
+    "e2e:browser": "node e2e/browser-pipeline.mjs",
+    "lint": "ng lint"
+  },
+  "dependencies": {
+    "@angular/common": "20.0.0",
+    "@angular/compiler": "20.0.0",
+    "@angular/core": "20.0.0",
+    "@angular/forms": "20.0.0",
+    "@angular/platform-browser": "20.0.0",
+    "@angular/router": "20.0.0",
+    "rxjs": "7.8.1",
+    "tslib": "2.6.3",
+    "tus-js-client": "4.1.0",
+    "zone.js": "0.15.0"
+  },
+  "devDependencies": {
+    "@angular/build": "20.0.0",
+    "@angular/cli": "20.0.0",
+    "@angular/compiler-cli": "20.0.0",
+    "playwright": "1.49.1",
+    "typescript": "5.8.2",
+    "vitest": "2.1.9"
+  }
+}

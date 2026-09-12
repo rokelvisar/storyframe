@@ -1,0 +1,26 @@
+# Local build + run. The production Portainer stack lives in deploy/stack.yml and
+# pulls the prebuilt ghcr.io image instead of building.
+services:
+  video-extractor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: video-extractor:local
+    ports:
+      - "8080:8080"
+    environment:
+      ANALYSIS_PROVIDER: "${ANALYSIS_PROVIDER:-noop}"
+      LITELLM_BASE_URL: "${LITELLM_BASE_URL:-}"
+      LITELLM_API_KEY: "${LITELLM_API_KEY:-}"
+      LITELLM_VLM_MODEL: "${LITELLM_VLM_MODEL:-}"
+      LITELLM_WHISPER_MODEL: "${LITELLM_WHISPER_MODEL:-}"
+      FFMPEG_WORKERS: "${FFMPEG_WORKERS:-2}"
+      IMMICH_BASE_URL: "${IMMICH_BASE_URL:-}"
+      IMMICH_API_KEY: "${IMMICH_API_KEY:-}"
+      IMMICH_WRITEBACK: "${IMMICH_WRITEBACK:-}"
+      TRANSCRIBE_LANGUAGE_HINT: "${TRANSCRIBE_LANGUAGE_HINT:-}"
+      OUTPUT_LANGUAGE: "${OUTPUT_LANGUAGE:-}"
+      MYSQL_DSN: "${MYSQL_DSN:-}"
+    volumes:
+      - ./data:/data
+    restart: unless-stopped

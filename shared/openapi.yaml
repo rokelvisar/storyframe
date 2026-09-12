@@ -1,0 +1,481 @@
+openapi: 3.1.0
+info:
+  title: Video Extractor API
+  version: 0.1.0
+  description: >
+    3-stage hybrid coarse-to-fine pipeline for asynchronous VLM storytelling analysis
+    of large videos. Stage 1 (browser): macro frame collage. Stage 2 (browser):
+    compressed audio. Stage 3 (backend): prioritised tus upload + per-segment FFmpeg
+    granular collages. This file is the single source of truth for the data models;
+    `backend/internal/models/*.go` and `frontend/src/app/models/*.ts` mirror it by hand.
+servers:
+  - url: /api/v1
+
+paths:
+  /jobs:
+    post:
+      operationId: createJob
+      summary: Initialise a job for a locally selected video file
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateJobRequest'
+      responses:
+        '201':
+          description: Job created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateJobResponse'
+    get:
+      operationId: listJobs
+      summary: >
+        The "previous videos" timeline — every job ever created, newest first,
+        as lightweight summaries (not the full segments/events/chat that
+        GET /jobs/{id} carries).
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100, maximum: 500 }
+      responses:
+        '200':
+          description: Job summaries, newest first
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListJobsResponse'
+
+  /jobs/from-immich:
+    post:
+      operationId: createJobFromImmich
+      summary: >
+        Initialise a job sourced from a self-hosted Immich instance (asset id or
+        public share link). No browser upload: Immich sends no CORS headers, so
+        the backend downloads the asset and builds Stage 1/2 itself with FFmpeg.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateJobFromImmichRequest'
+      responses:
+        '201':
+          description: Job created; downloading in the background
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateJobResponse'
+        '400': { description: Missing assetId/shareLink, asset isn't a video, or downloads disabled on the share link }
+        '502': { description: Could not resolve the asset against Immich }
+        '503': { description: Immich import not configured on this server (IMMICH_BASE_URL unset) }
+
+  /jobs/{id}:
+    get:
+      operationId: getJob
+      summary: Full job state (poll target)
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: Job
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '404': { description: Unknown job }
+
+  /jobs/{id}/overview:
+    post:
+      operationId: postOverview
+      summary: Upload the Stage-1 macro collage + frame metadata
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [collage, meta]
+              properties:
+                collage:
+                  type: string
+                  format: binary
+                  description: JPEG macro collage, ~1-2 MB
+                meta:
+                  type: string
+                  description: JSON-encoded OverviewMeta
+      responses:
+        '202':
+          description: Accepted; analysis runs asynchronously
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '404': { description: Unknown job }
+
+  /jobs/{id}/audio:
+    post:
+      operationId: postAudio
+      summary: Upload the Stage-2 compressed audio track
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [audio]
+              properties:
+                audio:
+                  type: string
+                  format: binary
+                  description: WebM/Opus, ~5-10 MB
+      responses:
+        '202':
+          description: Accepted; transcription runs asynchronously
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '404': { description: Unknown job }
+
+  /jobs/{id}/segments/{segmentId}/process:
+    post:
+      operationId: processSegment
+      summary: Mark a segment interesting; raise upload priority and trigger granular FFmpeg
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+        - name: segmentId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcessSegmentRequest'
+      responses:
+        '202':
+          description: Segment queued / re-prioritised
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimelineSegment'
+        '404': { description: Unknown job or segment }
+
+  /jobs/{id}/finalize:
+    post:
+      operationId: finalizeJob
+      summary: Force-close a job once the client has no more chunks to send
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '202':
+          description: Job moving to archive/complete
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+
+  /jobs/{id}/chat:
+    post:
+      operationId: postChat
+      summary: >
+        Ask a follow-up question about this video, grounded in its overview
+        story, transcript and per-segment descriptions (plus the macro collage
+        image on the first turn). The question is persisted synchronously; the
+        reply is appended asynchronously and picked up on the next GET /jobs/{id}.
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatRequest'
+      responses:
+        '202':
+          description: Question recorded; reply appended asynchronously
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '400': { description: Empty message }
+        '404': { description: Unknown job }
+        '409': { description: "Chat isn't available yet (overview hasn't finished analyzing)" }
+
+  /jobs/{id}/immich-writeback:
+    post:
+      operationId: postImmichWriteback
+      summary: >
+        Manually (re-)trigger writing the finished analysis back onto the
+        source Immich asset. Only valid for origin=immich jobs; works
+        regardless of the job's immichAutoWriteback flag. Runs best-effort in
+        the background — poll GET /jobs/{id} for immichWrittenBack.
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '202':
+          description: Write-back triggered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '400': { description: "Not an immich-origin job, or write-back isn't enabled on this server" }
+        '404': { description: Unknown job }
+
+components:
+  parameters:
+    JobId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+
+  schemas:
+    JobStatus:
+      type: string
+      enum: [created, downloading, overview_received, audio_received, analyzing, complete, error]
+
+    JobOrigin:
+      type: string
+      description: How the source bytes reached the server.
+      enum: [upload, immich]
+
+    SegmentStatus:
+      type: string
+      enum: [pending, uploading, uploaded, processing, done, error]
+
+    SegmentSource:
+      type: string
+      enum: [user, ai, plan]
+
+    CreateJobRequest:
+      type: object
+      required: [filename, sizeBytes, durationSec]
+      properties:
+        filename: { type: string }
+        sizeBytes: { type: integer, format: int64 }
+        durationSec: { type: number }
+        mimeType: { type: string }
+        segmentSeconds:
+          type: number
+          description: Requested segment granularity; server clamps. Default 30.
+        segmentPlan:
+          type: array
+          description: Optional explicit segment boundaries (overrides segmentSeconds)
+          items:
+            type: object
+            required: [startSec, endSec]
+            properties:
+              startSec: { type: number }
+              endSec: { type: number }
+        languageHint:
+          type: string
+          description: >
+            ISO-639-1 code, or a comma-separated candidate list (e.g. "en,sl")
+            to softly steer Whisper. Overrides the server's TRANSCRIBE_LANGUAGE_HINT
+            default (itself "en,sl") for this job only.
+        outputLanguage:
+          type: string
+          description: >
+            ISO-639-1 code the VLM should write the story/descriptions/chat
+            replies in. Overrides the server's OUTPUT_LANGUAGE default
+            (itself "sl") for this job only.
+
+    CreateJobFromImmichRequest:
+      type: object
+      description: Exactly one of assetId / shareLink is required.
+      properties:
+        assetId:
+          type: string
+          description: Immich asset id (needs IMMICH_API_KEY read access); also disambiguates which asset to pick when shareLink covers several.
+        shareLink:
+          type: string
+          description: A raw share key or a full https://<host>/share/<key> URL. No API key needed; subject to the link's allowDownload flag.
+        segmentSeconds:
+          type: number
+          description: Requested segment granularity; server clamps. Default 30.
+        languageHint: { type: string, description: Same as CreateJobRequest.languageHint }
+        outputLanguage: { type: string, description: Same as CreateJobRequest.outputLanguage }
+        autoWriteback:
+          type: boolean
+          description: >
+            Opt this job into writing the analysis back onto the source
+            Immich asset automatically on completion. Default false — a
+            manual POST /jobs/{id}/immich-writeback is needed otherwise.
+
+    ChatRequest:
+      type: object
+      required: [message]
+      properties:
+        message: { type: string }
+
+    ChatMessage:
+      type: object
+      required: [role, content, createdAt]
+      properties:
+        role: { type: string, enum: [user, assistant] }
+        content: { type: string }
+        createdAt: { type: string, format: date-time }
+
+    JobEvent:
+      type: object
+      required: [time, level, message]
+      description: One entry in a job's running activity log — pipeline steps ("building macro collage", "job complete") and AI-provider decisions ("VLM: trying gemini-...", "... failed, falling back").
+      properties:
+        time: { type: string, format: date-time }
+        level: { type: string, enum: [info, warn, error] }
+        message: { type: string }
+
+    CreateJobResponse:
+      type: object
+      required: [job]
+      properties:
+        job: { $ref: '#/components/schemas/Job' }
+        tusEndpoint:
+          type: string
+          description: Absolute or root-relative tus base URL, e.g. /files/. Omitted for origin=immich jobs (no browser upload).
+
+    JobSummary:
+      type: object
+      required: [id, filename, status, origin, durationSec, createdAt, updatedAt]
+      description: Lightweight projection of a Job for the timeline; see GET /jobs.
+      properties:
+        id: { type: string }
+        filename: { type: string }
+        status: { $ref: '#/components/schemas/JobStatus' }
+        origin: { $ref: '#/components/schemas/JobOrigin' }
+        durationSec: { type: number }
+        overviewCollageUrl: { type: string }
+        overviewStory: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    ListJobsResponse:
+      type: object
+      required: [jobs]
+      properties:
+        jobs:
+          type: array
+          items: { $ref: '#/components/schemas/JobSummary' }
+
+    OverviewMeta:
+      type: object
+      required: [cols, rows, cellWidth, cellHeight, frames]
+      properties:
+        cols: { type: integer }
+        rows: { type: integer }
+        cellWidth: { type: integer }
+        cellHeight: { type: integer }
+        frames:
+          type: array
+          items: { $ref: '#/components/schemas/FrameMeta' }
+        interestHints:
+          type: array
+          description: Optional client heuristic interest per segment index
+          items:
+            type: object
+            properties:
+              segmentIndex: { type: integer }
+              score: { type: number }
+
+    ProcessSegmentRequest:
+      type: object
+      properties:
+        source: { $ref: '#/components/schemas/SegmentSource' }
+        interestScore: { type: number }
+        reason: { type: string }
+
+    FrameMeta:
+      type: object
+      required: [t, row, col, x, y, w, h]
+      properties:
+        t: { type: number, description: Timestamp in seconds within the source video }
+        row: { type: integer }
+        col: { type: integer }
+        x: { type: integer, description: Pixel x of the cell top-left in the collage }
+        y: { type: integer }
+        w: { type: integer }
+        h: { type: integer }
+        label: { type: string, description: Human timestamp stamped onto the frame (HH:MM:SS) }
+
+    TimelineSegment:
+      type: object
+      required: [id, jobId, index, startSec, endSec, interestScore, source, status, uploadedBytes, totalBytes]
+      properties:
+        id: { type: string }
+        jobId: { type: string }
+        index: { type: integer }
+        startSec: { type: number }
+        endSec: { type: number }
+        interestScore: { type: number, minimum: 0, maximum: 1 }
+        source: { $ref: '#/components/schemas/SegmentSource' }
+        status: { $ref: '#/components/schemas/SegmentStatus' }
+        uploadedBytes: { type: integer, format: int64 }
+        totalBytes: { type: integer, format: int64 }
+        byteStart: { type: integer, format: int64 }
+        byteEnd: { type: integer, format: int64 }
+        granularCollageUrl: { type: string }
+        sceneChangeTimes:
+          type: array
+          items: { type: number }
+        description: { type: string, description: VLM per-segment description }
+        error: { type: string }
+        updatedAt: { type: string, format: date-time }
+
+    Job:
+      type: object
+      required: [id, filename, sizeBytes, durationSec, status, createdAt, updatedAt, segments]
+      properties:
+        id: { type: string }
+        filename: { type: string }
+        sizeBytes: { type: integer, format: int64 }
+        durationSec: { type: number }
+        mimeType: { type: string }
+        status: { $ref: '#/components/schemas/JobStatus' }
+        origin: { $ref: '#/components/schemas/JobOrigin' }
+        immichAssetId: { type: string, description: Set when origin=immich }
+        immichAutoWriteback:
+          type: boolean
+          description: >
+            origin=immich only. When true, the analysis is written back onto
+            the source asset automatically on completion. Default false — use
+            POST /jobs/{id}/immich-writeback to trigger it manually.
+        immichWrittenBack:
+          type: boolean
+          description: Whether a write-back (manual or automatic) has completed at least once.
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        overviewCollageUrl: { type: string }
+        overviewStory: { type: string, description: VLM coarse story of the whole video }
+        audioReceived: { type: boolean }
+        transcript: { type: string }
+        analysisProvider: { type: string, enum: [noop, litellm] }
+        error: { type: string }
+        frames:
+          type: array
+          items: { $ref: '#/components/schemas/FrameMeta' }
+        segments:
+          type: array
+          items: { $ref: '#/components/schemas/TimelineSegment' }
+        archiveUrl:
+          type: string
+          description: >
+            Downloadable full-video URL. Unset for origin=immich jobs once
+            analysis completes — the raw video is deleted locally (the
+            original stays in Immich, see immichAssetId) to avoid a redundant copy.
+        chatMessages:
+          type: array
+          items: { $ref: '#/components/schemas/ChatMessage' }
+        events:
+          type: array
+          description: Activity log for this job (capped server-side to the most recent 300 entries).
+          items: { $ref: '#/components/schemas/JobEvent' }
+        transcribeLanguageHint: { type: string }
+        outputLanguage: { type: string }
